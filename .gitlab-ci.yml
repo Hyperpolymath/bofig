@@ -1,0 +1,183 @@
+# GitLab CI/CD Pipeline for Evidence Graph
+# Automated testing, security scanning, and deployment
+
+image: elixir:1.16-alpine
+
+variables:
+  MIX_ENV: "test"
+  POSTGRES_DB: "evidence_graph_test"
+  POSTGRES_USER: "postgres"
+  POSTGRES_PASSWORD: "postgres"
+  ARANGO_ROOT_PASSWORD: "dev"
+
+# Caching for faster builds
+cache:
+  key: "$CI_COMMIT_REF_SLUG"
+  paths:
+    - deps/
+    - _build/
+    - assets/node_modules/
+
+# Build stages
+stages:
+  - setup
+  - lint
+  - test
+  - security
+  - deploy
+
+# Install dependencies
+setup:
+  stage: setup
+  before_script:
+    - apk add --no-cache build-base git
+    - mix local.hex --force
+    - mix local.rebar --force
+  script:
+    - mix deps.get --only test
+    - mix deps.compile
+    - cd assets && npm ci && cd ..
+  artifacts:
+    paths:
+      - deps/
+      - _build/
+      - assets/node_modules/
+    expire_in: 1 hour
+
+# Code formatting check
+format:
+  stage: lint
+  dependencies:
+    - setup
+  script:
+    - mix format --check-formatted
+  allow_failure: false
+
+# Linting with Credo
+lint:
+  stage: lint
+  dependencies:
+    - setup
+  script:
+    - mix credo --strict
+  allow_failure: true  # Don't block on linting initially
+
+# Run tests
+test:
+  stage: test
+  services:
+    - postgres:16-alpine
+    - arangodb/arangodb:3.11
+  dependencies:
+    - setup
+  before_script:
+    - mix ecto.create
+    - mix ecto.migrate
+  script:
+    - mix test
+    - mix test --cover
+  coverage: '/\[TOTAL\]\s+(\d+\.\d+)%/'
+  artifacts:
+    reports:
+      junit: _build/test/lib/evidence_graph/test-junit-report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: cover/excoveralls.cobertura.xml
+    paths:
+      - cover/
+    expire_in: 1 week
+
+# Dependency security audit
+security:deps:
+  stage: security
+  dependencies:
+    - setup
+  script:
+    - mix deps.audit
+  allow_failure: false
+
+# OWASP dependency check (Phase 2)
+# security:owasp:
+#   stage: security
+#   image: owasp/dependency-check:latest
+#   script:
+#     - dependency-check.sh --project "Evidence Graph" --scan mix.exs --format HTML --out reports/
+#   artifacts:
+#     paths:
+#       - reports/
+#     expire_in: 1 week
+#   allow_failure: true
+
+# RSR Framework compliance check
+rsr:compliance:
+  stage: lint
+  script:
+    - |
+      echo "🔍 Checking RSR Framework compliance..."
+      score=0
+      total=12
+
+      [ -f LICENSE.txt ] && echo "✅ LICENSE.txt" && ((score++)) || echo "❌ LICENSE.txt"
+      [ -f SECURITY.md ] && echo "✅ SECURITY.md" && ((score++)) || echo "❌ SECURITY.md"
+      [ -f CONTRIBUTING.md ] && echo "✅ CONTRIBUTING.md" && ((score++)) || echo "❌ CONTRIBUTING.md"
+      [ -f CODE_OF_CONDUCT.md ] && echo "✅ CODE_OF_CONDUCT.md" && ((score++)) || echo "❌ CODE_OF_CONDUCT.md"
+      [ -f MAINTAINERS.md ] && echo "✅ MAINTAINERS.md" && ((score++)) || echo "❌ MAINTAINERS.md"
+      [ -f CHANGELOG.md ] && echo "✅ CHANGELOG.md" && ((score++)) || echo "❌ CHANGELOG.md"
+      [ -f .well-known/security.txt ] && echo "✅ security.txt" && ((score++)) || echo "❌ security.txt"
+      [ -f .well-known/ai.txt ] && echo "✅ ai.txt" && ((score++)) || echo "❌ ai.txt"
+      [ -f .well-known/humans.txt ] && echo "✅ humans.txt" && ((score++)) || echo "❌ humans.txt"
+      [ -f justfile ] && echo "✅ justfile" && ((score++)) || echo "❌ justfile"
+      [ -f README.md ] && echo "✅ README.md" && ((score++)) || echo "❌ README.md"
+      [ -f ARCHITECTURE.md ] && echo "✅ ARCHITECTURE.md" && ((score++)) || echo "❌ ARCHITECTURE.md"
+
+      echo ""
+      echo "📊 RSR Compliance: $score/$total"
+      echo ""
+
+      if [ $score -ge 10 ]; then
+        echo "🥈 Silver Level (10-11/12)"
+      elif [ $score -ge 8 ]; then
+        echo "🎯 Bronze Level (8-9/12)"
+      else
+        echo "❌ Below Bronze (<8/12)"
+        exit 1
+      fi
+  allow_failure: false
+
+# Deploy to staging (Phase 2+)
+deploy:staging:
+  stage: deploy
+  only:
+    - develop
+  script:
+    - echo "Deploying to staging..."
+    - echo "Not implemented yet (Phase 2)"
+  when: manual
+  environment:
+    name: staging
+    url: https://staging.evidencegraph.org
+
+# Deploy to production (Phase 2+)
+deploy:production:
+  stage: deploy
+  only:
+    - main
+  script:
+    - echo "Deploying to production..."
+    - echo "Not implemented yet (Phase 2)"
+  when: manual
+  environment:
+    name: production
+    url: https://evidencegraph.org
+
+# Scheduled security scans (weekly)
+security:scheduled:
+  stage: security
+  dependencies:
+    - setup
+  script:
+    - mix deps.audit
+    - mix hex.audit
+  only:
+    - schedules
+  allow_failure: true
